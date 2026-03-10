@@ -1,0 +1,121 @@
+---
+title: "1 correção para não resposta ustilizando inverted probability weighting"
+author: "Tomoe Gusberti, Dr. Eng"
+date: "2025-03-20"
+output:
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+library(ggplot2)
+```
+
+```{r}
+load(file='./Data/Data_cleanedTreated_wide.RData')#data_wide,demog,
+
+data_wide$NonResp=is.na(data_wide$Idade_T3)
+data_wide=left_join(data_wide,demog)
+
+data_wide$NUTII <- factor(data_wide$NUTII, 
+                            levels = c(1:7),
+                            labels=c('Norte',  'Centro', 'Lisboa', 'Alentejo', 'Algarve', 'Açores', 'Madeira'))
+
+
+data_wide$SEXO <- factor(data_wide$SEXO, levels = c(1,2),labels=c('Male','Female'))
+data_wide$Estado_Civil <- factor(data_wide$Estado_Civil, 
+                            levels = c(1:5),
+                            labels=c('Single', 'Married', 'Divorced',
+                                     'Widowed', 'in a stable union'
+))
+
+data_wide$Escolaridade <- factor(data_wide$Escolaridade, 
+                            levels = c(1:5),
+                            labels=c('>12 years (university level)', 
+                                     '10 ~ 12 years study)',
+                                     '9 years study (elementary level)',
+                                     '4 years study (primary level)',
+                                     '< 4 years study'
+
+))
+data_wide$EmploymentStatus_T0<-factor(data_wide$EmploymentStatus_T0,labels=(c('Active Worker','unemployed','retired','other')))
+
+
+data_wide$MMorbCat_T3<-factor(data_wide$MMorbCat_T3,levels=c('0','1','2','3','+3'))
+data_wide$MMorbCat0<-factor(data_wide$MMorbCat0,levels=c('0','1','2','3','+3'))
+data_wide$DepressaoCat_T3 <- factor(data_wide$DepressaoCat_T3, labels = c('normal','mild','moderate',"severe"))
+data_wide$Depressao0Cat <- factor(data_wide$Depressao0Cat, labels = c('normal','mild','moderate',"severe"))
+
+data_wide$familySize0 <- factor(data_wide$familySize0, levels = c('LivingAlone','SmallFamily','MediumFamily',"LargeFamily"))
+data_wide$FamilyMembers0<-as.numeric(data_wide$FamilyMembers0)
+data_wide$FamilyMembers_T3<-as.numeric(data_wide$FamilyMembers_T3)
+
+data_wide$ageCat0 <- factor(data_wide$ageCat0, levels = c('Youth_<40','Adult_40_49','Adult_50_59',"Adult_60_69",'Adult_70_79','Adult_80+'))
+
+data_wide$smoke0 <- factor(data_wide$smoke0, levels = c('No','Ocasionally','Yes'))
+data_wide$Alcool0 <- factor(data_wide$Alcool0, levels = c('Never','Ocasionally','Daily'))
+save(data_wide,demog,file='./Data/Data_cleanedTreated_wide2.RData')#data_wide,demog,
+```
+
+#checking balance
+```{r eval=FALSE, include=FALSE}
+#remotes::install_github("ngreifer/cobalt")
+library('cobalt')
+bal.tab(NonResp ~ Depressao0Cat+ageCat0+SEXO+familySize0+EmploymentStatus_T0,
+          #MMorbCat0+smoke0+Alcool0+Exercise0# apparently problem is in thsi var
+          #+Escolaridade,
+        data = data_wide, estimand = "ATE", thresholds = c(m = .05))
+```
+```{r}
+bal.plot(NonResp ~ Depressao0Cat+ageCat0+SEXO+familySize0+EmploymentStatus_T0,
+          #MMorbCat0+smoke0+Alcool0+Exercise0# apparently problem is in thsi var
+          #+Escolaridade,
+        data = data_wide, estimand = "ATE", thresholds = c(m = .05))
+ggsave('./Inspect_balance/balPlot.png')
+```
+```{r}
+love.plot(NonResp ~ Depressao0Cat+ageCat0+SEXO+familySize0+EmploymentStatus_T0,
+          #MMorbCat0+smoke0+Alcool0+Exercise0# apparently problem is in thsi var
+          #+Escolaridade,
+        data = data_wide, estimand = "ATE", thresholds = c(m = .05))
+ggsave('./Inspect_balance/lovePlot.png')
+```
+# weights usign WieghtIt
+```{r}
+
+library("WeightIt")
+W.out <- weightit(NonResp ~ Depressao0Cat+ageCat0+SEXO+MMorbCat0+familySize0+smoke0+Alcool0+Exercise0+EmploymentStatus_T0+Escolaridade,
+        data = data_wide, estimand = "ATE", method = "ipt")
+W.out #print the output
+summary(W.out)
+data_wide$W=W.out[["weights"]]
+data_wide$ps=W.out[["ps"]]
+data_wide%>%group_by(NonResp,Depressao0Cat)%>%summarize(mean(W),sd(W))
+```
+# by logit glm
+```{r}
+library(broom)
+# Logit model to predict net use
+model <- glm(NonResp ~ Depressao0Cat+ageCat0+SEXO+MMorbCat0+familySize0+smoke0+Alcool0+Exercise0+EmploymentStatus_T0+Escolaridade,
+                         family = binomial(link = "logit"),
+                         data = data_wide)
+
+# Generate propensity scores and IPWs
+data_ipw <- augment_columns(model, data_wide,
+                                type.predict = "response") %>% 
+  rename(propensity = .fitted) %>% 
+  mutate(ipw = (NonResp / propensity) + ((1 - NonResp) / (1 - propensity)))
+```
+```{r}
+summary(model)
+```
+
+```{r}
+data_ipw%>%group_by(NonResp,Depressao0Cat)%>%summarize(mean(ipw),sd(ipw),mean(Idade_T3))
+```
+```{r}
+data_bal<-data_ipw%>%filter(NonResp==FALSE)
+save(data_bal,file='./Data/Data_ipwBalancedT3_wide.RData')
+```
+

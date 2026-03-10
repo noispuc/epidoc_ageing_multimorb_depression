@@ -1,0 +1,94 @@
+---
+title: "1c_treatMissing"
+output: html_document
+date: "2025-05-25"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+```
+
+
+# continue multiple imputation in parallel
+```{r}
+load(file='./Data/Data_cleaned.RData')
+library(mice)
+# in loop 10 each time - first one
+#m15 as maximum in this PC
+Sys.time()
+DataMice <- futuremice(data_t,m=10,maxit=10,method='cart',parallelseed=800, n.cores=20 )
+save(DataMice,file='./Data/Data_clmTrtd_Wide_paralelB_01.RData')
+Sys.time()
+#load(file='./Data/Data_clmTrtd_Wide_paralel.RData')#tempData
+```
+## inspect non-convergende with previous 40
+```{r}
+m=DataMice[["iteration"]]
+m
+```
+
+```{r}
+load(file='./PrepRecode/MMorbVars.RData')#tVars
+```
+
+
+```{r}
+plot(DataMice,y=c("Pontuacao_Depressao_T1",'Pontuacao_Depressao_T3',
+                  tVars%>%select(DC_T0,DC_T1,DC_T2)%>%unlist()%>%as.character()
+                  ))
+```
+
+# impute more
+```{r}
+# maybe useful https://github.com/amices/mice/blob/master/R/mice.mids.R
+source('./code/futuremiceMids.R')
+```
+
+```{r}
+library(future)
+library(mice)
+options(future.globals.maxSize = 5000 * 1024 ^ 2)
+# continue in loop, saving each 10 iterations... max 50
+for (i in 1:5){
+  DataMice <- futuremice.mids(DataMice,  maxit=10, parallelseed=800, n.core=10, print=TRUE)
+  save(DataMice,file=paste0('./Data/Data_clmTrtd_Wide_paralelB_0',(i+1),'.RData'))
+}
+
+#save(DataMice_02,file='./Data/Data_clmTrtd_Wide_paralel_40.RData')
+```
+# merging them
+```{r}
+load(file='./Data/mice_15b/Data_clmTrtd_Wide_paralel_04.RData')#DataMice
+DataMice$m
+DataMice$iteration
+```
+
+
+
+```{r}
+plot(DataMice, y=c("Pontuacao_Depressao_T1",'Pontuacao_Depressao_T3',
+                  tVars%>%select(DC_T0,DC_T1,DC_T2)%>%unlist()%>%as.character()
+                  ))
+```
+
+```{r}
+dt<-complete(imp25)
+library(visdat)
+vis_miss(dt,warn_large_data = FALSE)
+```
+```{r}
+library(naniar)
+library(ggplot2)
+gg_miss_var(dt) + theme_bw() 
+miss_var_summary(dt)
+gg_miss_upset(dt)
+```
+
+
+```{r}
+vis_miss(data_t,warn_large_data = FALSE)
+```
+
+
+

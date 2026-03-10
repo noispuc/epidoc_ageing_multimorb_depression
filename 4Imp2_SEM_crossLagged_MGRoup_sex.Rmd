@@ -1,0 +1,754 @@
+---
+title: "2 Cross-Lagged Structural Equation analysis"
+author: "Tomoe Gusberti, Dr. Eng"
+date: "2025-03-20"
+output: pdf_document
+always_allow_html: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+library(lavaan)
+#library(tidySEM)
+#detach("package:lavaan.mi", unload = TRUE)
+library(lavaan.mi)
+#library(semTools)
+
+
+library(ggplot2)
+```
+
+load data
+```{r}
+load(file='./Data/Data_Imp20_forSEM.RData')#data.mi
+GVAr='Sex'
+folderName=paste0('MGroup_',GVAr)
+#MGroup_sex
+```
+
+# Defining models
+## model with (almost) no restriction (almost saturated model)
+- we just let DepEpidoc4~agE be 0, based on previous results
+```{r}
+Model_sat<-'
+# evolução
+Dep_EpiDoc4~Dep_EpiDoc1+Dep_EpiDoc2
+MM_EpiDoc4~MM_EpiDoc2+MM_EpiDoc1
+Dep_EpiDoc2~Dep_EpiDoc1
+MM_EpiDoc2~MM_EpiDoc1
+
+# causalidade - c/ temporalidade/lag
+Dep_EpiDoc4~MM_EpiDoc2+MM_EpiDoc1
+MM_EpiDoc4~Dep_EpiDoc2+Dep_EpiDoc1
+Dep_EpiDoc2~MM_EpiDoc1
+MM_EpiDoc2~Dep_EpiDoc1
+
+# corrrelação mesmo t
+MM_EpiDoc1~~Dep_EpiDoc1
+MM_EpiDoc2~~Dep_EpiDoc2
+MM_EpiDoc4~~Dep_EpiDoc4
+
+# causalidade - idade
+Dep_EpiDoc4~0*Age
+MM_EpiDoc4~Age
+Dep_EpiDoc2~Age
+MM_EpiDoc2~Age
+Dep_EpiDoc1~Age
+MM_EpiDoc1~Age
+
+# Escolaridade
+Dep_EpiDoc4~Education
+Dep_EpiDoc2~Education
+Dep_EpiDoc1~Education
+MM_EpiDoc4+MM_EpiDoc2+MM_EpiDoc1~Education
+'
+```
+```{r}
+resSatModel<-lavaan.mi::sem.mi(data=data.mi,
+         model=Model_sat,
+         estimator = "ML", test = "yuan.bentler.mplus",
+         likelihood = "wishart",
+           sampling.weights='ipw',group=GVAr,
+         orthogonal=TRUE
+         )
+summary(resSatModel,fit.meas=TRUE,standardized=TRUE,rsquare=TRUE,ci=TRUE)
+```
+```{r}
+partable<-parameterEstimates.mi(resSatModel,standardized =TRUE)
+partable<-partable%>%mutate(
+  label2=paste0(lhs,op,rhs),
+  estimate_p=paste0(round(est,3),' (',round(pvalue,3),')'),
+  CI=paste0('[',round(ci.lower,3),':',round(ci.upper,3),']')
+)%>%select(-c(lhs,op,rhs))
+gPartable<-reshape(partable%>%filter(!block==0), idvar = c('label2'),
+                                                   timevar = "group", direction = "wide",sep='_')
+gPartable%>%select(label2,estimate_p_1,estimate_p_2,CI_1,CI_2)
+```
+
+
+# the extreme test: strong inv
+```{r}
+
+resAllEd_g_strongInv<-lavaan.mi::sem.mi(data=data.mi,#[complete.cases(data),],
+         model=Model_sat,# missing='pairwise',
+         #estimator='MLR', changed for bootstrap
+         estimator = "ML", test = "yuan.bentler.mplus",
+         likelihood = "wishart", #missing = "FIML", #estimator='WLSMV', later when ordinal variables are added
+           sampling.weights='ipw',group=GVAr,
+         orthogonal=TRUE,
+         group.equal = c("intercepts", "loadings")
+         )
+
+
+# model comparison tests
+lavaan.mi::lavTestLRT.mi(resSatModel,  resAllEd_g_strongInv)
+
+```
+
+# testing partial constrains
+## model with restriction on residualCov
+```{r}
+Model_RCov<-'
+# evolução
+#Dep_EpiDoc4~Dep_EpiDoc1+Dep_EpiDoc2
+Dep_EpiDoc4~Dep_EpiDoc1+Dep_EpiDoc2
+MM_EpiDoc4~MM_EpiDoc2+MM_EpiDoc1
+Dep_EpiDoc2~Dep_EpiDoc1
+MM_EpiDoc2~MM_EpiDoc1
+
+# causalidade - c/ temporalidade/lag
+Dep_EpiDoc4~MM_EpiDoc2+MM_EpiDoc1
+MM_EpiDoc4~Dep_EpiDoc2+Dep_EpiDoc1
+Dep_EpiDoc2~MM_EpiDoc1
+MM_EpiDoc2~Dep_EpiDoc1
+
+# corrrelação mesmo t
+MM_EpiDoc1~~md1*Dep_EpiDoc1
+MM_EpiDoc2~~0* Dep_EpiDoc2
+MM_EpiDoc4~~Dep_EpiDoc4
+
+# causalidade - idade
+Dep_EpiDoc4~0*Age
+MM_EpiDoc4~Age
+Dep_EpiDoc2~Age
+MM_EpiDoc2~Age
+Dep_EpiDoc1~Age
+MM_EpiDoc1~Age
+
+# Escolaridade
+Dep_EpiDoc4~Education
+Dep_EpiDoc2~Education
+Dep_EpiDoc1~Education
+MM_EpiDoc4+MM_EpiDoc2+MM_EpiDoc1~Education
+'
+```
+```{r}
+resRCov<-lavaan.mi::sem.mi(data=data.mi,
+         model=Model_RCov,
+         estimator = "ML", test = "yuan.bentler.mplus",
+         likelihood = "wishart",
+           sampling.weights='ipw',group=GVAr,
+         orthogonal=TRUE
+         )
+summary(resRCov,fit.meas=TRUE,standardized=TRUE,rsquare=TRUE,ci=TRUE)
+```
+### Test significance free model x resRCov
+```{r}
+lavaan.mi::lavTestLRT.mi(resRCov,resSatModel )
+```
+## model with restriction on AR components
+```{r}
+Model_AR<-'
+# evolução
+#Dep_EpiDoc4~dd03*Dep_EpiDoc1+dd13*Dep_EpiDoc2
+Dep_EpiDoc4~Dep_EpiDoc1+dd13*Dep_EpiDoc2
+MM_EpiDoc4~mm14*MM_EpiDoc2+mm04*MM_EpiDoc1
+Dep_EpiDoc2~dd01*Dep_EpiDoc1
+MM_EpiDoc2~mm01*MM_EpiDoc1 # freed up considering mi
+
+# causalidade - c/ temporalidade/lag
+Dep_EpiDoc4~MM_EpiDoc2+MM_EpiDoc1
+MM_EpiDoc4~Dep_EpiDoc2+Dep_EpiDoc1
+Dep_EpiDoc2~MM_EpiDoc1
+MM_EpiDoc2~Dep_EpiDoc1
+
+# corrrelação mesmo t
+MM_EpiDoc1~~0*Dep_EpiDoc1
+MM_EpiDoc2~~0* Dep_EpiDoc2
+MM_EpiDoc4~~Dep_EpiDoc4
+
+# causalidade - idade
+Dep_EpiDoc4~0*Age
+MM_EpiDoc4~Age
+Dep_EpiDoc2~Age
+MM_EpiDoc2~Age
+Dep_EpiDoc1~Age
+MM_EpiDoc1~Age
+
+# Escolaridade
+Dep_EpiDoc4~Education
+Dep_EpiDoc2~Education
+Dep_EpiDoc1~Education
+MM_EpiDoc4+MM_EpiDoc2+MM_EpiDoc1~Education
+'
+```
+```{r}
+resAR<-lavaan.mi::sem.mi(data=data.mi,
+         model=Model_AR,
+         estimator = "ML", test = "yuan.bentler.mplus",
+         likelihood = "wishart",
+           sampling.weights='ipw',group=GVAr,
+         orthogonal=TRUE
+         )
+summary(resAR,fit.meas=TRUE,standardized=TRUE,rsquare=TRUE,ci=TRUE)
+```
+### Test significance free model x AR stricted
+```{r}
+lavaan.mi::lavTestLRT.mi(resAR,resSatModel )
+```
+
+```{r}
+partable<-parameterEstimates.mi(resAR,standardized =TRUE)
+partable<-partable%>%mutate(
+  label2=paste0(lhs,op,rhs),
+  estimate_p=paste0(round(est,3),' (',round(pvalue,3),')'),
+  CI=paste0('[',round(ci.lower,3),':',round(ci.upper,3),']')
+)%>%select(-c(lhs,op,rhs))
+gPartable<-reshape(partable%>%filter(!block==0), idvar = c('label2'),
+                                                   timevar = "group", direction = "wide",sep='_')
+gPartable%>%select(label2,estimate_p_1,estimate_p_2,CI_1,CI_2)
+```
+
+## model with restriction on AR and Bi-dir
+```{r}
+Model_AR_BiD<-'
+# evolução
+# evolução
+#Dep_EpiDoc4~dd03*Dep_EpiDoc1+dd13*Dep_EpiDoc2
+Dep_EpiDoc4~Dep_EpiDoc1+dd13*Dep_EpiDoc2
+MM_EpiDoc4~mm14*MM_EpiDoc2+mm04*MM_EpiDoc1
+Dep_EpiDoc2~dd01*Dep_EpiDoc1
+MM_EpiDoc2~mm01*MM_EpiDoc1 
+
+# causalidade - c/ temporalidade/lag
+Dep_EpiDoc4~MM_EpiDoc2+0*MM_EpiDoc1
+Dep_EpiDoc2~dm21*MM_EpiDoc1
+MM_EpiDoc4~0*Dep_EpiDoc2+Dep_EpiDoc1 
+MM_EpiDoc2~Dep_EpiDoc1
+
+# corrrelação mesmo t
+MM_EpiDoc1~~0*Dep_EpiDoc1
+MM_EpiDoc2~~0* Dep_EpiDoc2
+MM_EpiDoc4~~Dep_EpiDoc4
+
+
+# causalidade - idade
+Dep_EpiDoc4~Age
+MM_EpiDoc4~Age
+Dep_EpiDoc2~Age
+MM_EpiDoc2~Age
+Dep_EpiDoc1~Age
+MM_EpiDoc1~Age
+
+# Escolaridade
+Dep_EpiDoc4~Education
+Dep_EpiDoc2~Education
+Dep_EpiDoc1~Education
+MM_EpiDoc4+MM_EpiDoc2+MM_EpiDoc1~Education
+
+'
+
+```
+```{r}
+resAR_BiD<-lavaan.mi::sem.mi(data=data.mi,
+         model=Model_AR_BiD,
+         estimator = "ML", test = "yuan.bentler.mplus",
+         likelihood = "wishart",
+           sampling.weights='ipw',group=GVAr,
+         orthogonal=TRUE
+         )
+summary(resAR_BiD,fit.meas=TRUE,standardized=TRUE,rsquare=TRUE,ci=TRUE)
+```
+
+### testing if keep beign the same of sat
+```{r}
+lavaan.mi::lavTestLRT.mi(resAR_BiD,resSatModel )
+```
+```{r}
+lavaan.mi::lavTestLRT.mi(resAR_BiD,resAR,resRCov,resSatModel )
+```
+
+
+```{r}
+partable<-parameterEstimates.mi(resAR_BiD,standardized =TRUE)
+partable<-partable%>%mutate(
+  label2=paste0(lhs,op,rhs),
+  estimate_p=paste0(round(est,3),' (',round(pvalue,3),')'),
+  CI=paste0('[',round(ci.lower,3),':',round(ci.upper,3),']')
+)%>%select(-c(lhs,op,rhs))
+gPartable<-reshape(partable%>%filter(!block==0), idvar = c('label2'),
+                                                   timevar = "group", direction = "wide",sep='_')
+gPartable%>%select(label2,estimate_p_1,estimate_p_2,CI_1,CI_2)
+```
+## model with restriction on AR, bi-dir (part) and age
+```{r}
+Model_ARAge<-'
+# evolução
+#Dep_EpiDoc4~dd03*Dep_EpiDoc1+dd13*Dep_EpiDoc2
+Dep_EpiDoc4~Dep_EpiDoc1+dd13*Dep_EpiDoc2
+MM_EpiDoc4~mm14*MM_EpiDoc2+mm04*MM_EpiDoc1
+Dep_EpiDoc2~dd01*Dep_EpiDoc1
+MM_EpiDoc2~mm01*MM_EpiDoc1 
+
+# causalidade - c/ temporalidade/lag
+Dep_EpiDoc4~MM_EpiDoc2+0*MM_EpiDoc1
+Dep_EpiDoc2~dm21*MM_EpiDoc1
+MM_EpiDoc4~0*Dep_EpiDoc2+Dep_EpiDoc1 
+MM_EpiDoc2~Dep_EpiDoc1
+
+# corrrelação mesmo t
+MM_EpiDoc1~~0*Dep_EpiDoc1
+MM_EpiDoc2~~0* Dep_EpiDoc2
+MM_EpiDoc4~~Dep_EpiDoc4
+
+
+# causalidade - idade
+Dep_EpiDoc4~0*Age
+MM_EpiDoc4~ma4*Age
+Dep_EpiDoc2~da2*Age
+MM_EpiDoc2~ma2*Age
+Dep_EpiDoc1~da1*Age
+MM_EpiDoc1~ma1*Age
+
+# Escolaridade
+Dep_EpiDoc4~Education
+Dep_EpiDoc2~Education
+Dep_EpiDoc1~Education
+MM_EpiDoc4+MM_EpiDoc2+MM_EpiDoc1~Education
+
+'
+
+```
+```{r}
+resARAge<-lavaan.mi::sem.mi(data=data.mi,
+         model=Model_ARAge,
+         estimator = "ML", test = "yuan.bentler.mplus",
+         likelihood = "wishart",
+           sampling.weights='ipw',group=GVAr,
+         orthogonal=TRUE
+         )
+summary(resARAge,fit.meas=TRUE,standardized=TRUE,rsquare=TRUE,ci=TRUE)
+```
+```{r}
+lavaan.mi::lavTestLRT.mi(resARAge,resSatModel )
+```
+```{r}
+lavaan.mi::lavTestLRT.mi(resARAge,resAR_BiD,resAR,resRCov,resSatModel )
+```
+
+
+```{r}
+partable<-parameterEstimates.mi(resARAge,standardized =TRUE)
+partable<-partable%>%mutate(
+  label2=paste0(lhs,op,rhs),
+  estimate_p=paste0(round(est,3),' (',round(pvalue,3),')'),
+  CI=paste0('[',round(ci.lower,3),':',round(ci.upper,3),']')
+)%>%select(-c(lhs,op,rhs))
+gPartable<-reshape(partable%>%filter(!block==0), idvar = c('label2'),
+                                                   timevar = "group", direction = "wide",sep='_')
+gPartable%>%select(label2,estimate_p_1,estimate_p_2,CI_1,CI_2)
+```
+
+## model with restriction on ED
+```{r}
+Model_ED<-'
+# evolução
+#Dep_EpiDoc4~dd03*Dep_EpiDoc1+dd13*Dep_EpiDoc2
+Dep_EpiDoc4~Dep_EpiDoc1+dd13*Dep_EpiDoc2
+MM_EpiDoc4~mm14*MM_EpiDoc2+mm04*MM_EpiDoc1
+Dep_EpiDoc2~dd01*Dep_EpiDoc1
+MM_EpiDoc2~mm01*MM_EpiDoc1 
+
+# causalidade - c/ temporalidade/lag
+Dep_EpiDoc4~MM_EpiDoc2+0*MM_EpiDoc1
+Dep_EpiDoc2~dm21*MM_EpiDoc1
+MM_EpiDoc4~0*Dep_EpiDoc2+Dep_EpiDoc1 
+MM_EpiDoc2~Dep_EpiDoc1
+
+# corrrelação mesmo t
+MM_EpiDoc1~~0*Dep_EpiDoc1
+MM_EpiDoc2~~0* Dep_EpiDoc2
+MM_EpiDoc4~~Dep_EpiDoc4
+
+
+# causalidade - idade
+Dep_EpiDoc4~0*Age
+MM_EpiDoc4~ma4*Age
+Dep_EpiDoc2~da2*Age
+MM_EpiDoc2~ma2*Age
+Dep_EpiDoc1~da1*Age
+MM_EpiDoc1~ma1*Age
+
+# Escolaridade
+Dep_EpiDoc4~0*Education
+Dep_EpiDoc2~de2*Education
+Dep_EpiDoc1~Education
+MM_EpiDoc4~0*Education
+MM_EpiDoc2~0*Education
+MM_EpiDoc1~Education
+
+'
+
+```
+```{r}
+resED<-lavaan.mi::sem.mi(data=data.mi,
+         model=Model_ED,
+         estimator = "ML", test = "yuan.bentler.mplus",
+         likelihood = "wishart",
+           sampling.weights='ipw',group=GVAr,
+         orthogonal=TRUE
+         )
+summary(resED,fit.meas=TRUE,standardized=TRUE,rsquare=TRUE,ci=TRUE)
+```
+
+```{r}
+lavaan.mi::lavTestLRT.mi(resED,resSatModel )
+```
+```{r}
+lavaan.mi::lavTestLRT.mi(resED, resARAge,resAR_BiD,resAR,resRCov, resSatModel )
+```
+
+## reported on fully adjusted
+
+```{r}
+
+partable<-parameterEstimates.mi(resED,standardized =TRUE)
+partable<-partable%>%mutate(
+  label2=paste0(lhs,op,rhs),
+  estimate_p=paste0(round(est,3),' (',round(pvalue,3),')'),
+  CI=paste0('[',round(ci.lower,3),':',round(ci.upper,3),']')
+)%>%select(-c(lhs,op,rhs))
+gPartable<-reshape(partable%>%filter(!block==0), idvar = c('label2'),
+                                                   timevar = "group", direction = "wide",sep='_')
+gPartable%>%select(label2,estimate_p_1,estimate_p_2,CI_1,CI_2)
+source('./code/parTableToCSV.R')
+parTableToCSV(resED,path=paste0('./Results/LaggedSEM_mi20_final/',folderName))
+
+```
+
+# GENERATING PLOTs
+## prepare for miPLOt
+```{r}
+library(mice)
+data_bal=complete(data.mi,0)
+res_dt0<-sem(data=data_bal,
+                   model=Model_ED,
+                    estimator = "ML", test = "yuan.bentler.mplus",
+         likelihood = "wishart", 
+           sampling.weights='ipw',
+         orthogonal=TRUE
+  )
+```
+
+## general plot
+```{r}
+source('./code/plotLavaanMI.R')
+#lay=get_layout(
+ #          '',"Dep_EpiDoc1","", "","", "Dep_EpiDoc4", 
+ #          '',"","", "Dep_EpiDoc2","", "", 
+ #          "", "",'',"","",'',
+ #           "", "",'',"","",'',
+ #          '',"","",'MM_EpiDoc2',"","",
+ #         '','MM_EpiDoc1',"","","",'MM_EpiDoc4',
+ #          "", "",'',"","",'',
+ #          "Age", "", "",'',"","",
+ #          rows = 7)
+lay=get_layout(
+  "Age", "","", '',"","",'',"",  "","",
+            "", "","", '',"","",'',"",  "","",
+   "", "","", '',"","",'Dep_EpiDoc2',"",  "","Dep_EpiDoc4",
+          "", '',"", "","", "", "", "","", "", 
+            "",'',"","Dep_EpiDoc1", "", "","",  "","", "",
+           "", "","", '',"","",'',"",  "","",
+            "Education", "","", '',"","",'',"",  "","",
+  "",'',"","", "","",'MM_EpiDoc2',"","",  "MM_EpiDoc4",
+            "", "","", '',"","",'',"",  "","",
+           "",'',"", 'MM_EpiDoc1',"","","","", "", '',
+           rows = 10)
+
+```
+
+```{r include=FALSE}
+library(tidySEM)
+parTable<-parameterEstimates.mi(resED, standardized=TRUE)
+dfPar<-get_edges(res_dt0)
+dfPar<-dfPar%>%mutate(
+  path= paste0(lhs,op,rhs)
+)
+dfPar<-left_join(dfPar%>%select(-c(est,se)),parTable,by=c('lhs','op','rhs'))
+dfPar<-dfPar%>%mutate(
+  #label=paste(paste(format(std.all,digit=3),'(p=',format(pvalue,digit=3),')'),collapse=';\n')
+  pvalue_temp=ifelse(pvalue<0.001,'<0.001',sprintf('=%.3f',pvalue)),
+  label=sprintf('%.3f (p%s)',std.all,pvalue_temp)
+  )
+dfPar$label<-ifelse(dfPar$arrow=='both','',dfPar$label)
+```
+### automatic
+```{r include=FALSE}
+
+nodes <- get_nodes(res_dt0)
+
+
+ba<-prepare_graph(res_dt0, layout = lay,
+                  rect_width = 2.5, # Increase rectangle width
+  rect_height = 1, # Increase rectangle height
+  )%>%
+  #edit_graph( {label = dfPar$rhs})%>%
+  edit_graph( {label = dfPar$label},element='edges') %>%
+  edit_graph({label_colour = ifelse(dfPar$arrow == "last",ifelse(dfPar$pvalue>0.01,'grey','blue') , "darkgreen")},element='edges')%>%
+  #edit_graph({label_colour = ifelse(dfPar$op == "~~",'white',
+   #           ifelse(dfPar$arrow == "last",
+    #                 ifelse(dfPar$pvalue>0.05,'white','blue') , "darkgreen")                      
+     #                              ) },element='edges')%>%
+  hide_cov()%>%
+  #hide_nonsig()%>%
+  #edit_graph({label_colour='blue'},element='nodes')%>%
+  #edit_nodes({label_colour=ifelse(grepl('Dep',nodes$name),'blue','darkgrey')    })%>%
+  #edit_graph({hide_var = TRUE}) %>% edit_graph({size = c(15, 2)}) %>%
+  edit_graph({label_location = 0.35})%>%
+  edit_graph({label_size = 3},element='edges')%>%
+   edit_graph({label_size = 3},element='nodes')%>%
+  #color_nonsig_edges("white") %>%
+  color_pos_edges("darkgrey") %>%
+  #color_neg_edges("red") %>%
+  color_var("white") %>%
+  #if_nodes({grepl('Dep',label)},{label_colour='blue'})%>%
+  plot(size = c(50, 15))
+ba
+ggsave(filename=paste0('./Results/LaggedSEM_mi20_final/',folderName,'/laggedSEM_general.png'), width = 30, height = 15, units = "cm")
+```
+## groups
+
+```{r}
+
+dfPar<-get_edges(res_dt0)
+p <- prepare_graph(res_dt0, layout = lay)
+dfNPar<-p$nodes
+partable<-parameterEstimates.mi(resED,standardized =TRUE)
+dfPar2<-left_join(dfPar%>%select(rhs,lhs,op,arrow,est_sig_std),
+                    partable)%>%mutate(
+                      pvalue_temp=ifelse(pvalue<0.001,'<0.001',sprintf('=%.3f',pvalue)),
+                      label2=sprintf('%.3f (p%s)',std.all,pvalue_temp),
+                      label2=ifelse(op=='~~','',label2)
+                    )
+dfPar2<-dfPar2%>%mutate(
+  path= paste0(rhs,op,lhs)
+)
+dfPar2<-dfPar2%>%group_by(path)%>%mutate(label=paste(paste(group,' ',est_sig_std),collapse=';\n'))
+```
+
+
+```{r echo=TRUE}
+b<-prepare_graph(res_dt0, layout = lay)%>%
+  #edit_graph( {label = dfPar2$lhs})%>%
+  edit_graph( {label = dfPar2$label},element='edges') %>%
+  #edit_graph({hide_var = TRUE}) %>% edit_graph({size = c(15, 2)}) %>%
+  edit_graph({label_location = 0.3})%>%
+  edit_graph({label_size = 2},element='edges')%>%
+  color_var("white") %>%
+  plot(size = c(15, 2))
+
+```
+
+```{r}
+partable<-parameterEstimates.mi(resED,standardized =TRUE)
+partable<-partable%>%mutate(
+  label= paste0(lhs,op,rhs)
+)%>%filter(op=='~')
+partable<-partable%>%mutate(
+  index=as.numeric(rownames(partable)))
+
+fitms<-fitMeasures(resED)
+fits<-paste0('CFI: ',round(fitms[['cfi']],3),' TLI: ',round(fitms[['tli']],3),' RMSEA: ',round(fitms[['rmsea']],3),' SRMR: ',round(fitms[['srmr']],3))
+print(fits)
+partable$group<-factor(partable$group,labels=c('male','female'))
+gall<-ggplot(data=partable,aes(y = factor(group), x = est,color=factor(group)))+
+  geom_point(shape = 18) +  
+  geom_errorbarh(aes(xmin = ci.lower, xmax = ci.upper), height = 0.25) +
+  geom_vline(xintercept =0, color = "red",  cex = 0.5, alpha = 0.5)+
+    facet_wrap( ~ label,ncol=2)+
+  #facet_grid(cols = vars(label))+
+  scale_y_discrete(name = "",labels = unique(data_bal$depression)) +theme_bw() +xlab('estimate')+
+  theme(strip.text.y = element_text(angle = 0))
+gall
+library(ggpubr)
+ggarrange(b, gall, widths = c(5,3),          ncol = 2)
+ggsave(filename=paste0('./Results/LaggedSEM_mi20_final/',folderName,'/laggedSEM_group1.png'), width = 35, height = 15, units = "cm")
+```
+
+```{r include=FALSE}
+partable$group<-factor(partable$group,labels=c('male','female'))
+
+partable<-partable%>%mutate(
+  rhs_cat=strtrim(rhs,3),
+  lhs_cat=strtrim(lhs,3)
+)
+g<-ggplot(data=partable%>%filter(!rhs=='Age')%>%filter(rhs_cat==lhs_cat),aes(y = factor(group), x = est,color= factor(group)))+
+  geom_point(shape = 18) +  
+  geom_errorbarh(aes(xmin = ci.lower, xmax = ci.upper), height = 0.25) +
+  geom_vline(xintercept =0, color = "red",  cex = 0.5, alpha = 0.5)+
+    facet_wrap( ~ label,ncol=1)+
+  #facet_grid(cols = vars(label))+
+  #scale_y_discrete(name = "",labels = unique(data$depression)) +
+  theme_bw() +xlab('estimate')+ylab('')+
+  theme(strip.text.y = element_text(angle = 0),
+        axis.ticks.y=element_blank(),
+         axis.text.y = element_blank(),
+        strip.text = element_text(size = 6),
+        legend.position="bottom",
+        legend.title=element_text(size=6),
+        legend.text=element_text(size=6),
+        legend.box.margin=margin(-10,0,-10,0),
+        panel.margin.y = unit(0, "lines"))+
+  labs(color=GVAr,x=NULL)
+
+g_cross_dep<-ggplot(data=partable%>%filter(!rhs=='Age')%>%filter(!rhs_cat==lhs_cat)%>%filter(rhs_cat=='Dep'),aes(y = factor(group), x = est,color= factor(group)))+
+  geom_point(shape = 18) +  
+  geom_errorbarh(aes(xmin = ci.lower, xmax = ci.upper), height = 0.25) +
+  geom_vline(xintercept =0, color = "red",  cex = 0.5, alpha = 0.5)+
+    facet_wrap( ~ label,ncol=1)+
+  #facet_grid(cols = vars(label))+
+  #scale_y_discrete(name = "",labels = unique(data$depression)) +
+  theme_bw() +xlab('estimate')+ylab('')+
+  theme(strip.text.y = element_text(angle = 0),
+        axis.ticks.y=element_blank(),
+         axis.text.y = element_blank(),
+        strip.text = element_text(size = 6),
+        legend.position="bottom",
+        legend.title=element_text(size=6),
+        legend.text=element_text(size=6),
+        legend.box.margin=margin(-10,0,-10,0),
+        panel.margin.y = unit(0, "lines"))+
+  labs(color=GVAr,x=NULL)
+g_cross_Mmorb<-ggplot(data=partable%>%filter(!rhs=='Age')%>%filter(!rhs_cat==lhs_cat)%>%filter(rhs_cat=='MM_'),aes(y = factor(group), x = est,color= factor(group)))+
+  geom_point(shape = 18) +  
+  geom_errorbarh(aes(xmin = ci.lower, xmax = ci.upper), height = 0.25) +
+  geom_vline(xintercept =0, color = "red",  cex = 0.5, alpha = 0.5)+
+    facet_wrap( ~ label,ncol=1)+
+  #facet_grid(cols = vars(label))+
+  #scale_y_discrete(name = "",labels = unique(data$depression)) +
+  theme_bw() +xlab('estimate')+ylab('')+
+  theme(strip.text.y = element_text(angle = 0),
+        axis.ticks.y=element_blank(),
+         axis.text.y = element_blank(),
+        strip.text = element_text(size = 6),
+        legend.position="bottom",
+        legend.title=element_text(size=6),
+        legend.text=element_text(size=6),
+        legend.box.margin=margin(-10,0,-10,0),
+        panel.spacing.y = unit(0, "lines"))+
+  labs(color=GVAr,x=NULL)
+g_cross_Mmorb
+```
+
+```{r include=FALSE}
+g_Idade<-ggplot(data=partable%>%filter(rhs=='Age'),aes(y = factor(group), x = est,color= factor(group)))+
+  geom_point(shape = 18) +  
+  geom_errorbarh(aes(xmin = ci.lower, xmax = ci.upper), height = 0.25) +
+  geom_vline(xintercept =0, color = "red",  cex = 0.5, alpha = 0.5)+
+    facet_wrap( ~ label,ncol=1)+
+  #facet_grid(cols = vars(label))+
+  #scale_y_discrete(name = "",labels = unique(data$depression)) +
+  theme_bw() +xlab('estimate')+ylab('')+
+  theme(strip.text.y = element_text(angle = 0),
+        axis.ticks.y=element_blank(),
+         axis.text.y = element_blank(),
+        strip.text = element_text(size = 6),
+        legend.position="bottom",
+        legend.title=element_text(size=6),
+        legend.text=element_text(size=6),
+        legend.box.margin=margin(-10,0,-10,0),
+        panel.margin.y = unit(0, "lines"))+
+  labs(color='Depression',x=NULL)
+g_Idade
+ggsave(filename=paste0('./Results/LaggedSEM_mi20_final/',folderName,'/LaggedSEM_group_forestplot.png'), width = 5, height = 15, units = "cm")
+```
+```{r include=FALSE}
+g_ED<-ggplot(data=partable%>%filter(rhs=='Education'),aes(y = factor(group), x = est,color= factor(group)))+
+  geom_point(shape = 18) +  
+  geom_errorbarh(aes(xmin = ci.lower, xmax = ci.upper), height = 0.25) +
+  geom_vline(xintercept =0, color = "red",  cex = 0.5, alpha = 0.5)+
+    facet_wrap( ~ label,ncol=1)+
+  #facet_grid(cols = vars(label))+
+  #scale_y_discrete(name = "",labels = unique(data$depression)) +
+  theme_bw() +xlab('estimate')+ylab('')+
+  theme(strip.text.y = element_text(angle = 0),
+        axis.ticks.y=element_blank(),
+         axis.text.y = element_blank(),
+        strip.text = element_text(size = 6),
+        legend.position="bottom",
+        legend.title=element_text(size=6),
+        legend.text=element_text(size=6),
+        legend.box.margin=margin(-10,0,-10,0),
+        panel.margin.y = unit(0, "lines"))+
+  labs(color='Depression',x=NULL)
+g_Idade
+ggsave(filename=paste0('./Results/LaggedSEM_mi20_final/',folderName,'/LaggedSEM_group_forestplot.png'), width = 5, height = 15, units = "cm")
+```
+
+## general plot + forest plot for groups
+```{r include=FALSE}
+ggarrange(ba+theme(plot.margin = unit(c(-0.9,-0.9,-0.9,-0.9), 'lines')), 
+          ggarrange(g+theme(plot.margin = unit(c(1,0,0,-0.9), 'lines'))+
+            theme(strip.background =element_rect(fill="white",colour=NA),
+                  panel.border = element_blank())+ theme(axis.text.x = element_text(size=8)),
+  ggarrange(g_cross_Mmorb+theme(plot.margin = unit(c(1,0,0,-0.9), 'lines'))+
+              theme(strip.background =element_rect(fill="white",colour=NA),
+                    panel.border = element_blank())+ theme(axis.text.x = element_text(size=8)),
+            g_cross_dep+theme(plot.margin = unit(c(0,0,0,-0.9), 'lines'))+
+              theme(strip.background =element_rect(fill="white",colour=NA),
+                    panel.border = element_blank())+ theme(axis.text.x = element_text(size=8)), 
+            legend='none', heights =  c(3,5),nrow = 2), 
+  ggarrange(g_Idade+theme(plot.margin = unit(c(1,0.1,0,-0.9), 'lines'))+
+              theme(strip.background =element_rect(fill="white",colour=NA),
+                    panel.border = element_blank())+ theme(axis.text.x = element_text(size=8)),
+            g_ED+theme(plot.margin = unit(c(0,0,0,-0.9), 'lines'))+
+              theme(strip.background =element_rect(fill="white",colour=NA),
+                    panel.border = element_blank())+ theme(axis.text.x = element_text(size=8)), 
+            legend='none', heights =  c(5,3),nrow = 2)+
+  theme(strip.background =element_rect(fill="white",colour=NA), 
+        panel.border = element_blank()), 
+                                          common.legend = TRUE,widths = c(2,2,2),
+          ncol = 3), widths = c(6,3),
+          ncol = 2)
+ggsave(filename=paste0('./Results/LaggedSEM_mi20_final/',folderName,'/laggedSEM_group_and_general.png'), width = 30, height = 15, units = "cm")
+```
+
+## just ed and age
+```{r include=FALSE}
+ggarrange(ba+theme(plot.margin = unit(c(-0.9,-0.9,-0.9,-0.9), 'lines')), 
+          ggarrange(
+            ggarrange(g_cross_Mmorb+theme(plot.margin = unit(c(1,0,0,-0.9), 'lines'))+
+                        theme(strip.background =element_rect(fill="white",colour=NA),
+                              panel.border = element_blank())+ 
+                        theme(axis.text.x = element_text(size=6)),
+                      g_cross_dep+theme(plot.margin = unit(c(0,0,0,-0.9), 'lines'))+
+                        theme(strip.background =element_rect(fill="white",colour=NA),
+                              panel.border = element_blank())+ 
+                        theme(axis.text.x = element_text(size=6)), 
+                      legend='none', heights =  c(5,5),nrow = 2), 
+            g_Idade+theme(plot.margin = unit(c(1,0.1,0,-0.9), 'lines'))+
+                        theme(strip.background =element_rect(fill="white",colour=NA),
+                              panel.border = element_blank())+ 
+                        theme(axis.text.x = element_text(size=6)),
+          g_ED+theme(plot.margin = unit(c(1,1,0,-0.9),'lines'))+
+                        theme(strip.background =element_rect(fill="white",colour=NA),
+                              panel.border = element_blank())+ 
+                        theme(axis.text.x = element_text(size=6)), 
+          common.legend = TRUE,widths = c(2,2,3), ncol = 3), 
+widths = c(6,3),          ncol = 2)
+ggsave(filename=paste0('./Results/LaggedSEM_mi20_final/',folderName,'/laggedSEM_group_and_general2.png'), width = 30, height = 15, units = "cm")
+```
+
+

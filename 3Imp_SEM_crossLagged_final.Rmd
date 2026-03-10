@@ -1,0 +1,983 @@
+---
+title: "2 Cross-Lagged Structural Equation analysis"
+author: "Tomoe Gusberti, Dr. Eng"
+date: "2025-03-20"
+output: pdf_document
+always_allow_html: false
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+library(lavaan)
+#library(tidySEM)
+#detach("package:lavaan.mi", unload = TRUE)
+library(lavaan.mi)
+#library(semTools)
+
+library(ggplot2)
+```
+
+# PREPARE DATA
+- depression levels- from imputed (multiple) data
+- multimorbidity from original scores?
+- inverted propensity weight - from ipwBalanced (imputation does not change it)
+```{r}
+load(file='./Data/Data_Imp20.RData')#imp20
+```
+
+```{r}
+load(file='./Data/Data_ipwBalancedT3_wide.RData')#data_bal
+data_bal<-data_bal%>%mutate(depression=ifelse(Depressao0Cat=='normal','non-Depressive',
+                                      ifelse(Depressao0Cat%in%c('mild',
+                                      'moderate','severe'),'Depressive',NA)))%>%
+    rename('Dep_EpiDoc1' := Depressao_T0, 'Dep_EpiDoc2':= Depressao_T1,
+           'Dep_EpiDoc4':= Depressao_T3,
+           'Age':=Idade_T0)
+
+```
+## merging and creating as mids
+```{r}
+library(miceadds)
+#datlist2mids
+
+data_mi=list()
+for (i in 1:imp20$m){
+  dt<-complete(imp20,i)
+  dt<-left_join(data_bal%>%
+                  select(ID,ipw,depression,MMorb_T0,MMorb_T1,MMorb_T3,MMorb0)
+                ,dt) %>%
+    mutate(
+      MMorbidity=ifelse(MMorb0>=2,'>=2 diseases','<2 diseases'),
+      EducationalLevel=ifelse(Escolaridade>2,
+                              '<=9 years','>9years')
+      )%>%
+    #T0=EpiDoc1, T1=Epipdoc2, T3=EpiDoc4
+    rename('Dep_EpiDoc1' := Pontuacao_Depressao_T0, 'Dep_EpiDoc2':= Pontuacao_Depressao_T1,
+           'Dep_EpiDoc4':= Pontuacao_Depressao_T3,
+           'MM_EpiDoc1':=MMorb_T0,
+           'MM_EpiDoc2':=MMorb_T1,
+           'MM_EpiDoc4':=MMorb_T3,
+           'Age':=Idade_T0,
+           'Education':=Escolaridade)%>%mutate(
+             Sex=ifelse(SEXO==1,'Male','Female')
+           )
+  # prep interaction terms
+  dt<-dt%>%mutate(
+    MM2_ed=scale(Education*MM_EpiDoc2)%>%as.numeric(),
+    MM1_ed=scale(Education*MM_EpiDoc1)%>%as.numeric(),
+    d2_ed=scale(Education*Dep_EpiDoc2)%>%as.numeric(),
+    d1_ed=scale(Education*Dep_EpiDoc1)%>%as.numeric(),
+    age_ed=scale(Education*Age)%>%as.numeric()
+  )
+  data_mi[[i]]<-dt
+}
+
+data.mi=datlist2mids(data_mi)
+save(data.mi,file='./Data/Data_Imp20_forSEM.RData')
+
+```
+
+# Lagged SEM model
+
+
+## ondas 0 e 1
+```{r}
+model01<-'
+Dep_EpiDoc2~MM_EpiDoc1+Dep_EpiDoc1
+MM_EpiDoc2~MM_EpiDoc1+Dep_EpiDoc1
+MM_EpiDoc1~~Dep_EpiDoc1
+MM_EpiDoc2~~Dep_EpiDoc2
+'
+res<-lavaan.mi::sem.mi(data=data.mi,std.ov=TRUE,
+         model=model01,# missing='pairwise',
+         estimator='MLR',likelihood = "wishart",# missing = "FIML", #estimator='WLSMV', later when ordinal variables are added
+           sampling.weights='ipw',
+         orthogonal=TRUE
+         )
+summary(res,fit.meas=TRUE)
+```
+
+## ondas 1, 2 e 3
+
+```{r}
+model013<-'
+# evolução
+Dep_EpiDoc4~Dep_EpiDoc1+Dep_EpiDoc2
+MM_EpiDoc4~MM_EpiDoc2+MM_EpiDoc1
+Dep_EpiDoc2~Dep_EpiDoc1
+MM_EpiDoc2~MM_EpiDoc1
+
+# causalidade - c/ temporalidade/lag
+Dep_EpiDoc4~MM_EpiDoc2+MM_EpiDoc1
+MM_EpiDoc4~Dep_EpiDoc2+Dep_EpiDoc1
+Dep_EpiDoc2~MM_EpiDoc1
+MM_EpiDoc2~Dep_EpiDoc1
+
+# corrrelação mesmo t
+MM_EpiDoc1~~Dep_EpiDoc1
+MM_EpiDoc2~~Dep_EpiDoc2
+MM_EpiDoc4~~Dep_EpiDoc4
+'
+res<-lavaan.mi::sem.mi(data=data.mi,std.ov=TRUE,
+         model=model013,# missing='pairwise',
+         estimator='MLR',likelihood = "wishart", #missing = "FIML", #estimator='WLSMV', later when ordinal variables are added
+           sampling.weights='ipw',
+         orthogonal=TRUE
+         )
+summary(res,fit.meas=TRUE)
+```
+
+# adding age
+```{r}
+modelAll0<-'
+# evolução
+Dep_EpiDoc4~dd03*Dep_EpiDoc1+dd13*Dep_EpiDoc2
+MM_EpiDoc4~MM_EpiDoc2+MM_EpiDoc1
+Dep_EpiDoc2~dd01*Dep_EpiDoc1
+MM_EpiDoc2~MM_EpiDoc1
+
+# causalidade - c/ temporalidade/lag
+Dep_EpiDoc4~MM_EpiDoc2+MM_EpiDoc1
+#Dep_EpiDoc4~MM_EpiDoc2
+MM_EpiDoc4~Dep_EpiDoc2+Dep_EpiDoc1
+Dep_EpiDoc2~dm1*MM_EpiDoc1
+MM_EpiDoc2~md1*Dep_EpiDoc1
+
+# corrrelação mesmo t
+MM_EpiDoc1~~Dep_EpiDoc1
+MM_EpiDoc2~~Dep_EpiDoc2
+MM_EpiDoc4~~Dep_EpiDoc4
+
+# causalidade - idade
+Dep_EpiDoc4~d3*Age
+MM_EpiDoc4~m3*Age
+Dep_EpiDoc2~d1*Age
+MM_EpiDoc2~m1*Age
+Dep_EpiDoc1~d0*Age
+MM_EpiDoc1~m0*Age
+
+age_dep_indirect:=d0*dd01*dd13+d0*dd03
+age_dep_direct:=d3
+
+dep0_direct:=dd03
+dep0_indirect:=dd01*dd13
+dep_total:=dd03+dd13*dd01
+
+# hypotheses 3
+age_dep1_direct:=d1
+age_dep1_m_indirect:=m0*dm1
+
+'
+resAll0<-lavaan.mi::sem.mi(data=data.mi,#[complete.cases(data),],
+         model=modelAll0,# missing='pairwise',
+         estimator='MLR',likelihood = "wishart", #missing = "FIML", #estimator='WLSMV', later when ordinal variables are added
+           sampling.weights='ipw',
+         orthogonal=TRUE
+         )
+summary(resAll0,fit.meas=TRUE,standardized=TRUE,rsquare=TRUE,ci=TRUE)
+```
+```{r}
+source('./code/parTableToCSV.R')
+parTableToCSV(resAll0,path='./Results/LaggedSEM_mi20/g_SEMED')
+```
+# adjusted and education
+```{r}
+modelAll0_adj<-'
+# evolução
+Dep_EpiDoc4~dd03*Dep_EpiDoc1+dd13*Dep_EpiDoc2
+MM_EpiDoc4~mm13*MM_EpiDoc2+mm03*MM_EpiDoc1
+Dep_EpiDoc2~dd01*Dep_EpiDoc1
+MM_EpiDoc2~mm01*MM_EpiDoc1
+
+# causalidade - c/ temporalidade/lag
+Dep_EpiDoc4~md13*MM_EpiDoc2+md03*MM_EpiDoc1
+#Dep_EpiDoc4~md13*MM_EpiDoc2
+MM_EpiDoc4~dm13*Dep_EpiDoc2+dm03*Dep_EpiDoc1
+Dep_EpiDoc2~dm01*MM_EpiDoc1
+MM_EpiDoc2~md01*Dep_EpiDoc1
+
+# corrrelação mesmo t
+MM_EpiDoc1~~Dep_EpiDoc1
+MM_EpiDoc2~~Dep_EpiDoc2
+MM_EpiDoc4~~Dep_EpiDoc4
+
+# causalidade - idade
+Dep_EpiDoc4~d3*Age
+MM_EpiDoc4~m3*Age
+Dep_EpiDoc2~d1*Age
+MM_EpiDoc2~m1*Age
+Dep_EpiDoc1~d0*Age
+MM_EpiDoc1~m0*Age
+
+# educação
+Dep_EpiDoc4~de3*Education
+MM_EpiDoc4~me3*Education
+Dep_EpiDoc2~de1*Education
+MM_EpiDoc2~me1*Education
+Dep_EpiDoc1~de0*Education
+MM_EpiDoc1~me0*Education
+
+#age effects
+age_dep_indirect:=d0*dd01*dd13+d0*dd03+d1*dd13
+age_depM_indirect:=m0*md03+m1*md13+d0*dm01*md13+d0*dm01*md13
+age_direct:=d3
+age_total:=age_dep_indirect+age_depM_indirect
+
+
+## indirect effect of educaiton on dep4
+ed_dep_indirect:=de0*dd01*dd13+de1*dd13
+ed_depM_indirect:=de1*dm01*md13
+ed_direct:=de3
+
+ed_total:=ed_dep_indirect+ed_depM_indirect
+
+## cumulative effect d1 on dep4
+dep0_direct:=dd03
+dep0_indirect:=dd01*dd13+dd01*dd13
+dep0_m_indirect:=dm01*md13+dm01*md13
+dep_total:=dep0_direct+dep0_indirect+dep0_m_indirect
+
+##indirect effect MM1 on dep4
+m0_direct:=md03
+m0_indirect:=md01*dd13+mm01*md13
+m0_total:=m0_direct+m0_indirect
+
+
+'
+res_adj<-lavaan.mi::sem.mi(data=data.mi,#[complete.cases(data),],
+         model=modelAll0_adj,# missing='pairwise',
+         #estimator='MLR', changed for bootstrap
+         estimator = "ML", test = "yuan.bentler.mplus",
+         likelihood = "wishart", missing = "FIML", #estimator='WLSMV', later when ordinal variables are added
+           sampling.weights='ipw',
+         orthogonal=TRUE
+         )
+summary(res_adj,fit.meas=TRUE)
+```
+```{r}
+parameterEstimates.mi(res_adj)
+anova(res_adj)
+```
+
+
+```{r}
+source('./code/parTableToCSV.R')
+res<-parTableToCSV(res_adj,path=('./Results/LaggedSEM_mi20_final'))
+res$partable
+```
+
+# Multi-group assessment
+```{r}
+modelfree<-'
+# evolução
+Dep_EpiDoc4~Dep_EpiDoc1+Dep_EpiDoc2
+MM_EpiDoc4~MM_EpiDoc2+MM_EpiDoc1
+Dep_EpiDoc2~Dep_EpiDoc1
+MM_EpiDoc2~MM_EpiDoc1
+
+# causalidade - c/ temporalidade/lag
+Dep_EpiDoc4~MM_EpiDoc2+MM_EpiDoc1
+Dep_EpiDoc4~MM_EpiDoc2
+MM_EpiDoc4~Dep_EpiDoc2+Dep_EpiDoc1
+Dep_EpiDoc2~MM_EpiDoc1
+MM_EpiDoc2~Dep_EpiDoc1
+
+# corrrelação mesmo t
+MM_EpiDoc1~~Dep_EpiDoc1
+MM_EpiDoc2~~Dep_EpiDoc2
+MM_EpiDoc4~~Dep_EpiDoc4
+
+# causalidade - idade
+Dep_EpiDoc4~0*Age
+MM_EpiDoc4~Age
+Dep_EpiDoc2~Age
+MM_EpiDoc2~Age
+Dep_EpiDoc1~Age
+MM_EpiDoc1~Age
+
+# educação
+Dep_EpiDoc4~Education
+Dep_EpiDoc2~Education
+Dep_EpiDoc1~Education
+MM_EpiDoc4~Education
+MM_EpiDoc2~Education
+MM_EpiDoc1~Education
+'
+```
+
+```{r}
+
+resFre_g<-lavaan.mi::sem.mi(data=data.mi,
+         model=modelfree,
+         estimator = "ML", test = "yuan.bentler.mplus",
+         likelihood = "wishart",
+           sampling.weights='ipw',group='Sex',
+         orthogonal=TRUE
+         )
+summary(resFre_g,fit.meas=TRUE,standardized=TRUE,rsquare=TRUE,ci=TRUE)
+```
+## theoretical restrictions on age, auto-regressive  or, cross-lagged components
+### restriction on residual cov
+```{r}
+
+model_covR<-'
+# evolução
+Dep_EpiDoc4~Dep_EpiDoc1+Dep_EpiDoc2
+MM_EpiDoc4~MM_EpiDoc2+MM_EpiDoc1
+Dep_EpiDoc2~Dep_EpiDoc1
+MM_EpiDoc2~MM_EpiDoc1 
+
+# causalidade - c/ temporalidade/lag
+Dep_EpiDoc4~MM_EpiDoc2+MM_EpiDoc1
+MM_EpiDoc4~Dep_EpiDoc2+Dep_EpiDoc1
+Dep_EpiDoc2~MM_EpiDoc1
+MM_EpiDoc2~Dep_EpiDoc1
+
+# corrrelação mesmo t
+MM_EpiDoc1~~Dep_EpiDoc1
+MM_EpiDoc2~~0*Dep_EpiDoc2
+MM_EpiDoc4~~0*Dep_EpiDoc4
+
+# causalidade - idade
+Dep_EpiDoc4~0*Age
+Dep_EpiDoc2~Age
+Dep_EpiDoc1~Age
+
+MM_EpiDoc4~Age
+MM_EpiDoc2~Age
+MM_EpiDoc1~Age
+
+# educação
+Dep_EpiDoc4~Education
+Dep_EpiDoc2~Education
+Dep_EpiDoc1~Education
+MM_EpiDoc4~Education
+MM_EpiDoc2~Education
+MM_EpiDoc1~Education
+'
+
+
+res_covR_g<-lavaan.mi::sem.mi(data=data.mi,#[complete.cases(data),],
+         model=model_covR,# missing='pairwise',
+         #estimator='MLR', changed for bootstrap
+         estimator = "ML", test = "yuan.bentler.mplus",
+         likelihood = "wishart",# missing = "FIML", #estimator='WLSMV', later when ordinal variables are added
+           sampling.weights='ipw',group='Sex',
+         orthogonal=TRUE
+         )
+summary(res_covR_g,fit.meas=TRUE,standardized=TRUE,rsquare=TRUE,ci=TRUE)
+
+anova(resFre_g,  res_covR_g)
+```
+
+### restriction on age direct effect
+- we free equality on cross-lagged effect... but if gender (and contextual issues matter, time point 4 would differ also... )
+- equal among group (doubt/hypotheses under test here)
+
+#### fully restrictive - on equality
+```{r}
+
+model_covAge_R<-'
+# evolução
+Dep_EpiDoc4~Dep_EpiDoc1+Dep_EpiDoc2
+MM_EpiDoc4~MM_EpiDoc2+MM_EpiDoc1
+Dep_EpiDoc2~Dep_EpiDoc1
+MM_EpiDoc2~MM_EpiDoc1 
+
+# causalidade - c/ temporalidade/lag
+Dep_EpiDoc4~MM_EpiDoc2+MM_EpiDoc1
+MM_EpiDoc4~Dep_EpiDoc2+Dep_EpiDoc1
+Dep_EpiDoc2~MM_EpiDoc1
+MM_EpiDoc2~Dep_EpiDoc1
+
+# corrrelação mesmo t
+MM_EpiDoc1~~Dep_EpiDoc1
+MM_EpiDoc2~~0*Dep_EpiDoc2
+MM_EpiDoc4~~0*Dep_EpiDoc4
+
+# causalidade - idade
+Dep_EpiDoc4~0*Age
+Dep_EpiDoc2~d2*Age
+Dep_EpiDoc1~d1*Age
+
+MM_EpiDoc4~m4*Age
+MM_EpiDoc2~m2*Age
+MM_EpiDoc1~m1*Age
+
+# educação
+Dep_EpiDoc4~Education
+Dep_EpiDoc2~Education
+Dep_EpiDoc1~Education
+MM_EpiDoc4~Education
+MM_EpiDoc2~Education
+MM_EpiDoc1~Education
+'
+
+
+res_covAge_g<-lavaan.mi::sem.mi(data=data.mi,#[complete.cases(data),],
+         model=model_covAge_R,# missing='pairwise',
+         #estimator='MLR', changed for bootstrap
+         estimator = "ML", test = "yuan.bentler.mplus",
+         likelihood = "wishart",# missing = "FIML", #estimator='WLSMV', later when ordinal variables are added
+           sampling.weights='ipw',group='Sex',
+         orthogonal=TRUE
+         )
+summary(res_covAge_g,fit.meas=TRUE,standardized=TRUE,rsquare=TRUE,ci=TRUE)
+
+anova(resFre_g,  res_covR_g,res_covAge_g)
+```
+difference is significant, constraining to make the effect of age being the  same among groups leads to worsening of the fit.
+
+```{r}
+
+source('./code/parTableToCSV.R')
+res<-parTableToCSV(res_covAge_g,path=('./Results/LaggedSEM_mi20/gSEX_covAge'))
+res$gPartable
+
+```
+
+#### freeing up MM
+- we free equality on cross-lagged effect... but if gender (and contextual issues matter, time point 4 would differ also... )
+- equal among group for dep (doubt/hypotheses under test here) 
+```{r}
+
+model_covAge_R<-'
+# evolução
+Dep_EpiDoc4~Dep_EpiDoc1+Dep_EpiDoc2
+MM_EpiDoc4~MM_EpiDoc2+MM_EpiDoc1
+Dep_EpiDoc2~Dep_EpiDoc1
+MM_EpiDoc2~MM_EpiDoc1 
+
+# causalidade - c/ temporalidade/lag
+Dep_EpiDoc4~MM_EpiDoc2+MM_EpiDoc1
+MM_EpiDoc4~Dep_EpiDoc2+Dep_EpiDoc1
+Dep_EpiDoc2~MM_EpiDoc1
+MM_EpiDoc2~Dep_EpiDoc1
+
+
+# corrrelação mesmo t
+MM_EpiDoc1~~Dep_EpiDoc1
+MM_EpiDoc2~~0*Dep_EpiDoc2
+MM_EpiDoc4~~0*Dep_EpiDoc4
+
+# causalidade - idade
+Dep_EpiDoc4~0*Age
+Dep_EpiDoc2~ad2*Age
+Dep_EpiDoc1~ad1*Age
+
+MM_EpiDoc4~c(am4a,am4b)*Age
+MM_EpiDoc2~c(am2a,am2b)*Age
+MM_EpiDoc1~c(am1a,am1b)*Age
+
+
+
+# educação
+Dep_EpiDoc4~Education
+Dep_EpiDoc2~Education
+Dep_EpiDoc1~Education
+MM_EpiDoc4~Education
+MM_EpiDoc2~Education
+MM_EpiDoc1~Education
+'
+
+
+res_covAge_g<-lavaan.mi::sem.mi(data=data.mi,#[complete.cases(data),],
+         model=model_covAge_R,# missing='pairwise',
+         #estimator='MLR', changed for bootstrap
+         estimator = "ML", test = "yuan.bentler.mplus",
+         likelihood = "wishart",# missing = "FIML", #estimator='WLSMV', later when ordinal variables are added
+           sampling.weights='ipw',group='Sex',
+         orthogonal=TRUE
+         )
+summary(res_covAge_g,fit.meas=TRUE,standardized=TRUE,rsquare=TRUE,ci=TRUE)
+
+anova(resFre_g,  res_covR_g,res_covAge_g)
+```
+difference is still significant, constraining to make the effect of age being the  same among groups leads to worsening of the fit.
+
+```{r}
+
+source('./code/parTableToCSV.R')
+res<-parTableToCSV(res_covAge_g,path=('./Results/LaggedSEM_mi20/gSEX_covAge'))
+res$gPartable
+
+```
+
+
+```{r}
+
+model_covAge_R<-'
+# evolução
+Dep_EpiDoc4~Dep_EpiDoc1+Dep_EpiDoc2
+MM_EpiDoc4~MM_EpiDoc2+MM_EpiDoc1
+Dep_EpiDoc2~Dep_EpiDoc1
+MM_EpiDoc2~MM_EpiDoc1 
+
+# causalidade - c/ temporalidade/lag
+Dep_EpiDoc4~MM_EpiDoc2+MM_EpiDoc1
+MM_EpiDoc4~Dep_EpiDoc2+Dep_EpiDoc1
+Dep_EpiDoc2~MM_EpiDoc1
+MM_EpiDoc2~Dep_EpiDoc1
+
+
+# corrrelação mesmo t
+MM_EpiDoc1~~Dep_EpiDoc1
+MM_EpiDoc2~~0*Dep_EpiDoc2
+MM_EpiDoc4~~0*Dep_EpiDoc4
+
+# causalidade - idade
+Dep_EpiDoc4~0*Age
+Dep_EpiDoc2~ad2*Age
+Dep_EpiDoc1~ad1*Age
+
+MM_EpiDoc4~c(am4a,am4b)*Age
+MM_EpiDoc2~c(am2a,am2b)*Age
+MM_EpiDoc1~c(am1a,am1b)*Age
+
+
+
+# educação
+Dep_EpiDoc4~Education
+Dep_EpiDoc2~Education
+Dep_EpiDoc1~Education
+MM_EpiDoc4~Education
+MM_EpiDoc2~Education
+MM_EpiDoc1~Education
+'
+
+
+res_covAge_g<-lavaan.mi::sem.mi(data=data.mi,#[complete.cases(data),],
+         model=model_covAge_R,# missing='pairwise',
+         #estimator='MLR', changed for bootstrap
+         estimator = "ML", test = "yuan.bentler.mplus",
+         likelihood = "wishart",# missing = "FIML", #estimator='WLSMV', later when ordinal variables are added
+           sampling.weights='ipw',group='Sex',
+         orthogonal=TRUE
+         )
+summary(res_covAge_g,fit.meas=TRUE,standardized=TRUE,rsquare=TRUE,ci=TRUE)
+
+anova(resFre_g,  res_covR_g,res_covAge_g)
+```
+difference is still significant, constraining to make the effect of age being the  same among groups leads to worsening of the fit.
+
+```{r}
+
+source('./code/parTableToCSV.R')
+res<-parTableToCSV(res_covAge_g,path=('./Results/LaggedSEM_mi20/gSEX_covAge'))
+res$gPartable
+
+```
+
+### restriction on education 
+#### restrictions on NO direct effect
+```{r}
+
+model_covAgeEd_R<-'
+# evolução
+Dep_EpiDoc4~Dep_EpiDoc1+Dep_EpiDoc2
+MM_EpiDoc4~MM_EpiDoc2+MM_EpiDoc1
+Dep_EpiDoc2~Dep_EpiDoc1
+MM_EpiDoc2~MM_EpiDoc1 
+
+# causalidade - c/ temporalidade/lag
+Dep_EpiDoc4~MM_EpiDoc2+MM_EpiDoc1
+MM_EpiDoc4~Dep_EpiDoc2+Dep_EpiDoc1
+Dep_EpiDoc2~MM_EpiDoc1
+MM_EpiDoc2~Dep_EpiDoc1
+
+
+# corrrelação mesmo t
+MM_EpiDoc1~~Dep_EpiDoc1
+MM_EpiDoc2~~0*Dep_EpiDoc2
+MM_EpiDoc4~~0*Dep_EpiDoc4
+
+# causalidade - idade
+Dep_EpiDoc4~0*Age
+Dep_EpiDoc2~ad2*Age
+Dep_EpiDoc1~ad1*Age
+
+MM_EpiDoc4~c(am4a,am4b)*Age
+MM_EpiDoc2~c(am2a,am2b)*Age
+MM_EpiDoc1~c(am1a,am1b)*Age
+
+
+
+# educação
+Dep_EpiDoc4~0*Education
+Dep_EpiDoc2~Education
+Dep_EpiDoc1~Education
+MM_EpiDoc4~0*Education
+MM_EpiDoc2~Education
+MM_EpiDoc1~Education
+'
+
+
+res_covAgeEd_g<-lavaan.mi::sem.mi(data=data.mi,#[complete.cases(data),],
+         model=model_covAgeEd_R,# missing='pairwise',
+         #estimator='MLR', changed for bootstrap
+         estimator = "ML", test = "yuan.bentler.mplus",
+         likelihood = "wishart",# missing = "FIML", #estimator='WLSMV', later when ordinal variables are added
+           sampling.weights='ipw',group='Sex',
+         orthogonal=TRUE
+         )
+summary(res_covAgeEd_g,fit.meas=TRUE,standardized=TRUE,rsquare=TRUE,ci=TRUE)
+
+anova(resFre_g,  res_covR_g,res_covAge_g,res_covAgeEd_g)
+```
+difference is still significant, constraining to make the effect of age being the  same among groups leads to worsening of the fit.
+
+```{r}
+
+source('./code/parTableToCSV.R')
+res<-parTableToCSV(res_covAgeEd_g,path=('./Results/LaggedSEM_mi20/gSEX_covAgeEd'))
+res$gPartable
+
+```
+
+
+#### restrictions on NO effect MM
+```{r}
+
+model_covAgeEd2_R<-'
+# evolução
+Dep_EpiDoc4~c(dd14a,dd14b)*Dep_EpiDoc1+c(dd24a,dd24b)*Dep_EpiDoc2
+Dep_EpiDoc2~c(dd12a,dd12b)*Dep_EpiDoc1
+
+MM_EpiDoc4~c(mm24a,mm24b)*MM_EpiDoc2+c(mm14a,mm14b)*MM_EpiDoc1
+MM_EpiDoc2~c(mm12a,mm12b)*MM_EpiDoc1 
+
+# causalidade - c/ temporalidade/lag
+Dep_EpiDoc4~c(md24a,md24b)*MM_EpiDoc2+c(md14a,md14b)*MM_EpiDoc1
+Dep_EpiDoc2~c(md12a,md12b)*MM_EpiDoc1
+
+MM_EpiDoc4~c(dm24a,dm24b)*Dep_EpiDoc2+c(dm14a,dm14b)*Dep_EpiDoc1
+MM_EpiDoc2~c(dm12a,dm12b)*Dep_EpiDoc1
+
+
+# corrrelação mesmo t
+MM_EpiDoc1~~Dep_EpiDoc1
+MM_EpiDoc2~~0*Dep_EpiDoc2
+MM_EpiDoc4~~0*Dep_EpiDoc4
+
+# causalidade - idade
+Dep_EpiDoc4~0*Age
+Dep_EpiDoc2~ad2*Age
+Dep_EpiDoc1~ad1*Age
+
+MM_EpiDoc4~c(am4a,am4b)*Age
+MM_EpiDoc2~c(am2a,am2b)*Age
+MM_EpiDoc1~c(am1a,am1b)*Age
+
+
+
+# educação
+Dep_EpiDoc4~0*Education
+Dep_EpiDoc2~c(ed2a,ed2b)*Education
+Dep_EpiDoc1~c(ed1a,ed1b)*Education
+MM_EpiDoc4~0*Education
+MM_EpiDoc2~0*Education
+MM_EpiDoc1~0*Education
+
+
+# effect on multimorbidity
+
+
+# effects on depression =============
+##indirect effect age on dep4
+ada:=ad1*dd14a+ad2*dd24a+ad1*dd12a*dd24a
+adb:=ad1*dd14b+ad2*dd24b+ad1*dd12b*dd24b
+amda:=am1a*md14a+am2a*md24a+am1a*mm12a*md24a+ad1*dm12a*md24a
+amdb:=am1b*md14b+am2b*md24b+am1b*mm12b*md24b+ad1*dm12b*md24b
+
+
+adta:=ada+amda
+adtb:=adb+amdb
+
+##indirect effect MM1 on dep4
+mda:=md12a*dd24a+mm12a*md24a+md14a
+mdb:=md12b*dd24b+mm12b*md24b+md14b
+
+## cumulative effect d1 on dep4
+dda:=dm12a*md24a+dd12a*dd24a+dd14a
+ddb:=dm12b*md24b+dd12b*dd24b+dd14b
+
+## indirect effect of educaiton on dep4
+eda:=ed1a*dd12a*dd24a+ed2a*dd24a
+edb:=ed1b*dd12b*dd24b+ed2b*dd24b
+emda:=ed1a*dm12a*md24a
+emdb:=ed1b*dm12b*md24b
+
+edta:=eda+amda
+edtb:=edb+emdb
+
+'
+
+
+res_covAgeEd2_g<-lavaan.mi::sem.mi(data=data.mi,#[complete.cases(data),],
+         model=model_covAgeEd2_R,# missing='pairwise',
+         #estimator='MLR', changed for bootstrap
+         estimator = "ML", test = "yuan.bentler.mplus",
+         likelihood = "wishart",# missing = "FIML", #estimator='WLSMV', later when ordinal variables are added
+           sampling.weights='ipw',group='Sex',
+         orthogonal=TRUE
+         )
+summary(res_covAgeEd2_g,fit.meas=TRUE,standardized=TRUE,rsquare=TRUE,ci=TRUE)
+
+anova(resFre_g,  res_covR_g,res_covAge_g,res_covAgeEd_g,res_covAgeEd2_g)
+```
+difference is still significant, constraining to make the effect of age being the  same among groups leads to worsening of the fit.
+
+```{r}
+
+source('./code/parTableToCSV.R')
+res<-parTableToCSV(res_covAgeEd2_g,path=('./Results/LaggedSEM_mi20/gSEX_covAgeEd'))
+res$gPartable
+
+```
+
+
+# testing moderation
+```{r}
+
+model_mod<-'
+# evolução
+Dep_EpiDoc4~Dep_EpiDoc1+Dep_EpiDoc2
+Dep_EpiDoc2~Dep_EpiDoc1
+
+MM_EpiDoc4~MM_EpiDoc2+MM_EpiDoc1
+MM_EpiDoc2~MM_EpiDoc1 
+
+# causalidade - c/ temporalidade/lag
+Dep_EpiDoc4~MM_EpiDoc2+MM_EpiDoc1
+Dep_EpiDoc2~MM_EpiDoc1
+
+MM_EpiDoc4~Dep_EpiDoc2+Dep_EpiDoc1
+MM_EpiDoc2~Dep_EpiDoc1
+
+
+
+# corrrelação mesmo t
+MM_EpiDoc1~~Dep_EpiDoc1
+MM_EpiDoc2~~0*Dep_EpiDoc2
+MM_EpiDoc4~~0*Dep_EpiDoc4
+
+# causalidade - idade
+Dep_EpiDoc4~0*Age
+Dep_EpiDoc2~Age
+Dep_EpiDoc1~Age
+
+MM_EpiDoc4~0*Age
+MM_EpiDoc2~Age
+MM_EpiDoc1~Age
+
+
+# educação
+Dep_EpiDoc4~0*Education
+Dep_EpiDoc2~Education
+Dep_EpiDoc1~Education
+MM_EpiDoc4~0*Education
+MM_EpiDoc2~Education
+MM_EpiDoc1~Education
+
+
+# interaction terms
+#Dep_EpiDoc4~MM2_ed+MM1_ed
+#Dep_EpiDoc2~MM1_ed
+
+
+
+MM_EpiDoc4~d2_ed+d2_ed
+MM_EpiDoc2~d1_ed
+
+
+
+MM_EpiDoc4~age_ed
+MM_EpiDoc2~age_ed
+MM_EpiDoc1~age_ed
+
+# correlation among interaction terms and its original var
+#MM2_ed~~Education+MM_EpiDoc2+age_ed+Age+MM1_ed+MM_EpiDoc1+d2_ed+d1_ed
+#MM1_ed~~Education+MM_EpiDoc1+age_ed+Age+MM_EpiDoc2+d2_ed+d1_ed
+d2_ed~~Education+Dep_EpiDoc2+age_ed+d1_ed+Age+Dep_EpiDoc1
+d1_ed~~Education+Dep_EpiDoc1+age_ed+Age+Dep_EpiDoc2
+age_ed~~Education+Age
+Education~~Age
+
+'
+
+
+res_mod<-lavaan.mi::sem.mi(data=data.mi,#[complete.cases(data),],
+         model=model_mod,# missing='pairwise',
+         #estimator='MLR', changed for bootstrap
+         estimator = "ML", test = "yuan.bentler.mplus",
+         likelihood = "wishart",# missing = "FIML", #estimator='WLSMV', later when ordinal variables are added
+           sampling.weights='ipw',group='Sex',
+         orthogonal=FALSE
+         )
+summary(res_mod,fit.meas=TRUE,standardized=TRUE,rsquare=TRUE,ci=TRUE)
+```
+```{r}
+
+source('./code/parTableToCSV.R')
+res<-parTableToCSV(res_mod,path=('./Results/LaggedSEM_mi20/Moderation'))
+res$gPartable
+
+```
+
+
+# testing moderation with quant
+```{r}
+
+model_mod<-'
+# evolução
+Dep_EpiDoc4~c(dd14a,dd14b)*Dep_EpiDoc1+c(dd24a,dd24b)*Dep_EpiDoc2
+Dep_EpiDoc2~c(dd12a,dd12b)*Dep_EpiDoc1
+
+MM_EpiDoc4~c(mm24a,mm24b)*MM_EpiDoc2+c(mm14a,mm14b)*MM_EpiDoc1
+MM_EpiDoc2~c(mm12a,mm12b)*MM_EpiDoc1 
+
+# causalidade - c/ temporalidade/lag
+Dep_EpiDoc4~c(md24a,md24b)*MM_EpiDoc2+c(md14a,md14b)*MM_EpiDoc1
+Dep_EpiDoc2~c(md12a,md12b)*MM_EpiDoc1
+
+MM_EpiDoc4~c(dm24a,dm24b)*Dep_EpiDoc2+c(dm14a,dm14b)*Dep_EpiDoc1
+MM_EpiDoc2~c(dm12a,dm12b)*Dep_EpiDoc1
+
+
+# corrrelação mesmo t
+MM_EpiDoc1~~Dep_EpiDoc1
+MM_EpiDoc2~~0*Dep_EpiDoc2
+MM_EpiDoc4~~0*Dep_EpiDoc4
+
+# causalidade - idade
+Dep_EpiDoc4~0*Age
+Dep_EpiDoc2~ad2*Age
+Dep_EpiDoc1~ad1*Age
+
+MM_EpiDoc4~c(am4a,am4b)*Age
+MM_EpiDoc2~c(am2a,am2b)*Age
+MM_EpiDoc1~c(am1a,am1b)*Age
+
+
+# educação
+Dep_EpiDoc4~0*Education
+Dep_EpiDoc2~c(ed2a,ed2b)*Education
+Dep_EpiDoc1~c(ed1a,ed1b)*Education
+MM_EpiDoc4~0*Education
+MM_EpiDoc2~0*Education
+MM_EpiDoc1~0*Education
+
+
+
+# effects on depression =============
+##indirect effect age on dep4
+ada:=ad1*dd14a+ad2*dd24a+ad1*dd12a*dd24a
+adb:=ad1*dd14b+ad2*dd24b+ad1*dd12b*dd24b
+amda:=am1a*md14a+am2a*md24a+am1a*mm12a*md24a+ad1*dm12a*md24a
+amdb:=am1b*md14b+am2b*md24b+am1b*mm12b*md24b+ad1*dm12b*md24b
+
+
+adta:=ada+amda
+adtb:=adb+amdb
+
+##indirect effect MM1 on dep4
+mda:=md12a*dd24a+mm12a*md24a+md14a
+mdb:=md12b*dd24b+mm12b*md24b+md14b
+
+## cumulative effect d1 on dep4
+dda:=dm12a*md24a+dd12a*dd24a+dd14a
+ddb:=dm12b*md24b+dd12b*dd24b+dd14b
+
+## indirect effect of educaiton on dep4
+eda:=ed1a*dd12a*dd24a+ed2a*dd24a
+edb:=ed1b*dd12b*dd24b+ed2b*dd24b
+emda:=ed1a*dm12a*md24a
+emdb:=ed1b*dm12b*md24b
+
+edta:=eda+amda
+edtb:=edb+emdb
+
+
+# interaction terms =========
+Dep_EpiDoc4~MM2_ed+MM1_ed
+Dep_EpiDoc2~MM1_ed
+
+
+
+MM_EpiDoc4~d2_ed+d2_ed
+MM_EpiDoc2~d1_ed
+
+
+
+MM_EpiDoc4~age_ed
+MM_EpiDoc2~age_ed
+MM_EpiDoc1~age_ed
+
+# correlation among interaction terms and its original var
+MM2_ed~~Education+MM_EpiDoc2+age_ed+Age+MM1_ed+MM_EpiDoc1+d2_ed+d1_ed
+MM1_ed~~Education+MM_EpiDoc1+age_ed+Age+MM_EpiDoc2+d2_ed+d1_ed
+d2_ed~~Education+Dep_EpiDoc2+age_ed+d1_ed+Age+Dep_EpiDoc1
+d1_ed~~Education+Dep_EpiDoc1+age_ed+Age+Dep_EpiDoc2
+age_ed~~Education+Age
+Education~~Age
+
+
+
+'
+
+
+res_mod<-lavaan.mi::sem.mi(data=data.mi,#[complete.cases(data),],
+         model=model_mod,# missing='pairwise',
+         #estimator='MLR', changed for bootstrap
+         estimator = "ML", test = "yuan.bentler.mplus",
+         likelihood = "wishart",# missing = "FIML", #estimator='WLSMV', later when ordinal variables are added
+           sampling.weights='ipw',group='Sex',
+         orthogonal=FALSE
+         )
+summary(res_mod,fit.meas=TRUE,standardized=TRUE,rsquare=TRUE,ci=TRUE)
+```
+```{r}
+
+source('./code/parTableToCSV.R')
+res<-parTableToCSV(res_mod,path=('./Results/LaggedSEM_mi20/Moderation'))
+res$gPartable
+
+```
+
+<!-- # plot -->
+## full data
+```{r eval=FALSE, include=FALSE}
+library(semTools)
+source('./code/plotLavaanMI.R')
+#lay=get_layout(
+ #          '',"Dep_EpiDoc1","", "","", "Dep_EpiDoc4", 
+ #          '',"","", "Dep_EpiDoc2","", "", 
+ #          "", "",'',"","",'',
+ #           "", "",'',"","",'',
+ #          '',"","",'MM_EpiDoc2',"","",
+ #         '','MM_EpiDoc1',"","","",'MM_EpiDoc4',
+ #          "", "",'',"","",'',
+ #          "Age", "", "",'',"","",
+ #          rows = 7)
+lay=get_layout(
+  "Age", "","", '',"","",'',"",  "","",
+            "", "","", '',"","",'',"",  "","",
+   "", "","", '',"","",'Dep_EpiDoc2',"",  "","Dep_EpiDoc4",
+          "", '',"", "","", "", "", "","", "", 
+            "",'',"","Dep_EpiDoc1", "", "","",  "","", "",
+           "Education", "","", '',"","",'',"",  "","",
+            "", "","", '',"","",'',"",  "","",
+  "",'',"","", "","",'MM_EpiDoc2',"","",  "MM_EpiDoc4",
+            "", "","", '',"","",'',"",  "","",
+           "",'',"", 'MM_EpiDoc1',"","","","", "", '',
+           rows = 10)
+plotLavaanMI(model=modelAll0_adj,layout=lay,data.mi=data.mi,estimator='ML',
+                       test = "yuan.bentler.mplus",
+                       likelihood = "wishart", missing = "FIML",
+                       sampling.weights='ipw',
+                       orthogonal=TRUE,
+                       filepath='./Results/LaggedSEM_mi20/laggedSEM.png')
+```
+
+
