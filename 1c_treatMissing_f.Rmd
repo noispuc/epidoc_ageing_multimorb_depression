@@ -1,6 +1,6 @@
 ---
 title: "1c_treatMissing"
-output: html_document
+output: github_document
 date: "2025-05-25"
 ---
 
